@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary debug images
+cand_*.png
+crop_*.png
+debug_*.png
+diff_*.png
+glyph_*.png
+intact_char_*.png
+slice_*.png
+th_*.png
+top_scan_*.png
+bh_*.png
+actual_*.png
+mh_*.png
+kia_*.png
+scratch_*.png
+real_*.png
+white_plate_*.png
+live_oakd_current_frame.png
+hud_annotated_result*.png
+plate_cand_*.png
+
+# Extracted PPT folders
+extracted_media/
+extracted_ppt/
+ppt_content.txt
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
