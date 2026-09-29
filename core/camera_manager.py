@@ -124,134 +124,129 @@ class CameraManager:
 
         def run_oakd():
             import depthai as dai
-            retry_count = 0
-            while retry_count < 15 and not self.oakd_running:
+            while True:
                 try:
-                    logger.info("Scanning for OAK-D Pro devices...")
-                    devices = dai.Device.getAllAvailableDevices()
-                    if not devices:
-                        logger.warning("Waiting for OAK-D Pro device... retrying in 2s")
-                        time.sleep(2.0)
-                        retry_count += 1
-                        continue
+                    if not self.oakd_running:
+                        logger.info("Scanning for OAK-D Pro hardware...")
+                        devices = dai.Device.getAllAvailableDevices()
+                        if not devices:
+                            time.sleep(2.0)
+                            continue
 
-                    d = devices[0]
-                    device_id = getattr(d, 'deviceId', None) or getattr(d, 'name', None) or "OAKD_PRO_DEVICE"
-                    self.oakd_info["device_id"] = str(device_id)
-                    logger.info(f"OAK-D Pro detected (ID: {device_id}). Constructing 3-Camera Perception Pipeline...")
+                        d = devices[0]
+                        device_id = getattr(d, 'deviceId', None) or getattr(d, 'name', None) or "OAKD_PRO_DEVICE"
+                        self.oakd_info["device_id"] = str(device_id)
+                        logger.info(f"OAK-D Pro detected (ID: {device_id}). Constructing 3-Camera Perception Pipeline...")
 
-                    pipeline = dai.Pipeline()
+                        pipeline = dai.Pipeline()
 
-                    # 1. CAM A (Center Color RGB Sensor) - 640x400 @ 60 FPS for Ultra-Smooth Feed
-                    cam_rgb = pipeline.create(dai.node.Camera)
-                    cam_rgb.build(dai.CameraBoardSocket.CAM_A)
-                    rgb_out = cam_rgb.requestOutput(size=(640, 400), type=dai.ImgFrame.Type.BGR888p, fps=60.0)
-                    q_rgb = rgb_out.createOutputQueue(maxSize=2, blocking=False)
+                        # 1. CAM A (Center Color RGB Sensor) - 640x400 @ 60 FPS for Ultra-Smooth Feed
+                        cam_rgb = pipeline.create(dai.node.Camera)
+                        cam_rgb.build(dai.CameraBoardSocket.CAM_A)
+                        rgb_out = cam_rgb.requestOutput(size=(640, 400), type=dai.ImgFrame.Type.BGR888p, fps=60.0)
+                        q_rgb = rgb_out.createOutputQueue(maxSize=2, blocking=False)
 
-                    # 2. CAM B (Left Mono IR Sensor) - 640x400 @ 60 FPS
-                    cam_left = pipeline.create(dai.node.Camera)
-                    cam_left.build(dai.CameraBoardSocket.CAM_B)
-                    left_out = cam_left.requestOutput(size=(640, 400), type=dai.ImgFrame.Type.RAW8, fps=60.0)
-                    q_left = left_out.createOutputQueue(maxSize=2, blocking=False)
+                        # 2. CAM B (Left Mono IR Sensor) - 640x400 @ 60 FPS
+                        cam_left = pipeline.create(dai.node.Camera)
+                        cam_left.build(dai.CameraBoardSocket.CAM_B)
+                        left_out = cam_left.requestOutput(size=(640, 400), type=dai.ImgFrame.Type.RAW8, fps=60.0)
+                        q_left = left_out.createOutputQueue(maxSize=2, blocking=False)
 
-                    # 3. CAM C (Right Mono IR Sensor) - 640x400 @ 60 FPS
-                    cam_right = pipeline.create(dai.node.Camera)
-                    cam_right.build(dai.CameraBoardSocket.CAM_C)
-                    right_out = cam_right.requestOutput(size=(640, 400), type=dai.ImgFrame.Type.RAW8, fps=60.0)
-                    q_right = right_out.createOutputQueue(maxSize=2, blocking=False)
+                        # 3. CAM C (Right Mono IR Sensor) - 640x400 @ 60 FPS
+                        cam_right = pipeline.create(dai.node.Camera)
+                        cam_right.build(dai.CameraBoardSocket.CAM_C)
+                        right_out = cam_right.requestOutput(size=(640, 400), type=dai.ImgFrame.Type.RAW8, fps=60.0)
+                        q_right = right_out.createOutputQueue(maxSize=2, blocking=False)
 
-                    # 4. StereoDepth Engine (Linked to Left & Right, aligned to RGB)
-                    stereo = pipeline.create(dai.node.StereoDepth)
-                    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
-                    stereo.setLeftRightCheck(True)
-                    stereo.setSubpixel(True)
-                    stereo.setOutputSize(640, 400)
-                    stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+                        # 4. StereoDepth Engine (Linked to Left & Right, aligned to RGB)
+                        stereo = pipeline.create(dai.node.StereoDepth)
+                        stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.DEFAULT)
+                        stereo.setLeftRightCheck(True)
+                        stereo.setSubpixel(True)
+                        stereo.setOutputSize(640, 400)
+                        stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
 
-                    left_out.link(stereo.left)
-                    right_out.link(stereo.right)
+                        left_out.link(stereo.left)
+                        right_out.link(stereo.right)
 
-                    q_depth = stereo.depth.createOutputQueue(maxSize=2, blocking=False)
+                        q_depth = stereo.depth.createOutputQueue(maxSize=2, blocking=False)
 
-                    # Activate IR Laser Projector and Floodlight on OAK-D Pro hardware
-                    try:
-                        dev = pipeline.getDefaultDevice()
-                        dev.setIrLaserDotProjectorIntensity(0.7)
-                        dev.setIrFloodLightIntensity(0.2)
-                        logger.info("OAK-D Pro IR Laser Dot Projector (700mA) & Floodlight (200mA) activated!")
-                    except Exception as ex:
-                        logger.info(f"IR configuration note: {ex}")
+                        # Activate IR Laser Projector and Floodlight on OAK-D Pro hardware
+                        try:
+                            dev = pipeline.getDefaultDevice()
+                            dev.setIrLaserDotProjectorIntensity(0.7)
+                            dev.setIrFloodLightIntensity(0.2)
+                            logger.info("OAK-D Pro IR Laser Dot Projector (700mA) & Floodlight (200mA) activated!")
+                        except Exception as ex:
+                            logger.info(f"IR configuration note: {ex}")
 
-                    logger.info("Starting DepthAI pipeline execution on OAK-D Pro...")
-                    pipeline.start()
-                    self.oakd_pipeline = pipeline
-                    self.oakd_running = True
-                    self.oakd_info["connected"] = True
-                    self.cameras["CAM_OAKD"]["status"] = "ONLINE"
-                    logger.info("OAK-D Pro 3-Camera Perception & Odometry Engine ONLINE and streaming!")
+                        logger.info("Starting DepthAI pipeline execution on OAK-D Pro...")
+                        pipeline.start()
+                        self.oakd_pipeline = pipeline
+                        self.oakd_running = True
+                        self.oakd_info["connected"] = True
+                        self.cameras["CAM_OAKD"]["status"] = "ONLINE"
+                        logger.info("OAK-D Pro 3-Camera Perception & Odometry Engine ONLINE and streaming!")
 
-                    frame_count = 0
-                    start_time = time.time()
+                        frame_count = 0
+                        start_time = time.time()
 
-                    while self.oakd_running:
-                        # Grab RGB frame
-                        frame_rgb = q_rgb.tryGet()
-                        if frame_rgb is not None:
-                            bgr = frame_rgb.getCvFrame()
-                            with self.lock:
-                                self.oakd_latest_frame = bgr
-                                self.oakd_latest_ts = time.time()
-                                frame_count += 1
+                        while self.oakd_running:
+                            # Grab RGB frame
+                            frame_rgb = q_rgb.tryGet()
+                            if frame_rgb is not None:
+                                bgr = frame_rgb.getCvFrame()
+                                with self.lock:
+                                    self.oakd_latest_frame = bgr
+                                    self.oakd_latest_ts = time.time()
+                                    frame_count += 1
 
-                        # Grab Depth frame
-                        frame_depth = q_depth.tryGet()
-                        if frame_depth is not None:
-                            depth_data = frame_depth.getCvFrame() # uint16 mm depth
-                            with self.lock:
-                                self.oakd_latest_depth = depth_data
-                                # Generate colorized TURBO depth visualization
-                                depth_vis = np.clip(depth_data, 0, 7000)
-                                depth_vis_8u = (depth_vis * (255.0 / 7000.0)).astype(np.uint8)
-                                depth_turbo = cv2.applyColorMap(depth_vis_8u, cv2.COLORMAP_TURBO)
-                                depth_turbo[depth_data == 0] = (15, 18, 24)
-                                self.oakd_latest_depth_color = depth_turbo
+                            # Grab Depth frame
+                            frame_depth = q_depth.tryGet()
+                            if frame_depth is not None:
+                                depth_data = frame_depth.getCvFrame() # uint16 mm depth
+                                with self.lock:
+                                    self.oakd_latest_depth = depth_data
+                                    depth_vis = np.clip(depth_data, 0, 7000)
+                                    depth_vis_8u = (depth_vis * (255.0 / 7000.0)).astype(np.uint8)
+                                    depth_turbo = cv2.applyColorMap(depth_vis_8u, cv2.COLORMAP_TURBO)
+                                    depth_turbo[depth_data == 0] = (15, 18, 24)
+                                    self.oakd_latest_depth_color = depth_turbo
 
-                        # Grab Left Mono IR frame
-                        frame_left = q_left.tryGet()
-                        if frame_left is not None:
-                            with self.lock:
-                                self.oakd_latest_left_mono = frame_left.getCvFrame()
+                            # Grab Left Mono IR frame
+                            frame_left = q_left.tryGet()
+                            if frame_left is not None:
+                                with self.lock:
+                                    self.oakd_latest_left_mono = frame_left.getCvFrame()
 
-                        # Grab Right Mono IR frame
-                        frame_right = q_right.tryGet()
-                        if frame_right is not None:
-                            with self.lock:
-                                self.oakd_latest_right_mono = frame_right.getCvFrame()
+                            # Grab Right Mono IR frame
+                            frame_right = q_right.tryGet()
+                            if frame_right is not None:
+                                with self.lock:
+                                    self.oakd_latest_right_mono = frame_right.getCvFrame()
 
-                        # Update FPS
-                        elapsed = time.time() - start_time
-                        if elapsed >= 1.0:
-                            self.oakd_fps = round(frame_count / elapsed, 1)
-                            self.oakd_info["fps"] = self.oakd_fps
-                            frame_count = 0
-                            start_time = time.time()
+                            # Update FPS
+                            elapsed = time.time() - start_time
+                            if elapsed >= 1.0:
+                                self.oakd_fps = round(frame_count / elapsed, 1)
+                                self.oakd_info["fps"] = self.oakd_fps
+                                frame_count = 0
+                                start_time = time.time()
 
-                        time.sleep(0.002)
+                            time.sleep(0.002)
 
                 except Exception as e:
                     logger.warning(f"OAK-D Pro pipeline error: {e}")
-                    time.sleep(2.0)
-                    retry_count += 1
-                finally:
-                    if self.oakd_pipeline is not None and not self.oakd_running:
+                    self.oakd_running = False
+                    self.oakd_info["connected"] = False
+                    self.cameras["CAM_OAKD"]["status"] = "STANDBY"
+                    if self.oakd_pipeline is not None:
                         try:
                             self.oakd_pipeline.stop()
                         except Exception:
                             pass
-
-            if not self.oakd_running:
-                logger.info("OAK-D Pro hardware offline or unbooted, switching to stand-by state.")
-                self.cameras["CAM_OAKD"]["status"] = "STANDBY"
+                        self.oakd_pipeline = None
+                    time.sleep(2.0)
 
         self.oakd_thread = threading.Thread(target=run_oakd, daemon=True)
         self.oakd_thread.start()
