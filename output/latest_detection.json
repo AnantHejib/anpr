@@ -1,0 +1,18 @@
+{
+  "plate_text": "SEARCHING",
+  "confidence": 0.0,
+  "source": "CAM_OAKD",
+  "timestamp": 1790660840.7394793,
+  "timestamp_str": "2026-09-29 11:17:20",
+  "zoomed_image": "output/latest_plate.png",
+  "ocr_card": "output/latest_ocr.png",
+  "zoom_scale": 3.0,
+  "hypotheses": [],
+  "bbox": [
+    221,
+    164,
+    419,
+    236
+  ],
+  "status": "SCANNING"
+}

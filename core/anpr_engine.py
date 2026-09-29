@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 import os
+import json
 from typing import List, Dict, Any, Tuple, Optional
 
 import torch
@@ -199,11 +200,21 @@ class ANPREngine:
         self.inference_fps = 0.0
         self.inference_latency_ms = 0.0
 
+        # Output Persistence Engine (/output directory for zoomed crops & OCR cards)
+        self.output_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "output"))
+        self.plates_dir = os.path.join(self.output_dir, "plates")
+        os.makedirs(self.plates_dir, exist_ok=True)
+        self.last_saved_plate = ""
+        self.last_saved_time = 0.0
+        self.latest_detection_file = os.path.join(self.output_dir, "latest_detection.json")
+        self.history_file = os.path.join(self.output_dir, "history.json")
+
         self.latest_result: Dict[str, Any] = {
             "vehicle_detected": False,
             "plate_detected": False,
             "vehicles": [],
             "plates": [],
+            "candidate_boxes": [],
             "primary_plate": None,
             "primary_vehicle": None,
             "count_vehicles": 0,
@@ -545,7 +556,7 @@ class ANPREngine:
         if best_result is None:
             return None
 
-        plate_text, avg_conf, _ = best_result
+        plate_text, avg_conf, char_boxes = best_result
         if avg_conf < 0.40 or len(plate_text) < 4:
             return None
 
@@ -554,7 +565,167 @@ class ANPREngine:
             return None
 
         hypotheses = self.generate_top_k_hypotheses(clean_text, base_confidence=min(0.98, max(0.65, avg_conf)))
-        return clean_text, round(min(0.98, max(0.65, avg_conf)), 2), hypotheses
+        return clean_text, round(min(0.98, max(0.65, avg_conf)), 2), hypotheses, char_boxes
+
+    def process_and_save_zoomed_plate(self, plate_crop: np.ndarray, source_name: str = "CAM_OAKD", bbox: Optional[List[int]] = None) -> Optional[Dict[str, Any]]:
+        """
+        Backend Zoom, Persistence & OCR Recognition Pipeline:
+        1. Crops & extracts plate candidate from camera stream.
+        2. Applies high-definition optical zoom (3.5x - 4x bicubic super-resolution scaling).
+        3. Saves the zoomed plate image to output/plates/ and output/latest_plate.png.
+        4. Runs FastCharCNN neural OCR recognition directly on the zoomed image.
+        5. Generates tactical OCR verification card with character boxes and status badge.
+        6. Saves verified OCR output card to output/plates/ and output/latest_ocr.png.
+        7. Persists structured metadata to output/latest_detection.json and output/history.json.
+        """
+        if plate_crop is None or plate_crop.size == 0 or plate_crop.shape[0] < 12 or plate_crop.shape[1] < 28:
+            return None
+
+        h_c, w_c = plate_crop.shape[:2]
+        zoom_scale = max(3.0, min(5.0, 140.0 / float(h_c)))
+        new_w, new_h = int(w_c * zoom_scale), int(h_c * zoom_scale)
+        zoomed_plate = cv2.resize(plate_crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+        # Mild edge sharpening without noise halos
+        blur = cv2.GaussianBlur(zoomed_plate, (0, 0), 1.2)
+        zoomed_enhanced = cv2.addWeighted(zoomed_plate, 1.25, blur, -0.25, 0)
+
+        # Perform OCR recognition directly on this zoomed image
+        ocr_res = self.segment_and_recognize_plate(zoomed_enhanced)
+        if ocr_res is None:
+            ocr_res = self.segment_and_recognize_plate(zoomed_plate)
+
+        now = time.time()
+        ts = int(now * 1000)
+        time_str = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        char_boxes = []
+        if ocr_res is not None:
+            if len(ocr_res) == 4:
+                plate_text, conf, hypotheses, char_boxes = ocr_res
+            else:
+                plate_text, conf, hypotheses = ocr_res[:3]
+        else:
+            plate_text, conf, hypotheses = None, 0.0, []
+
+        # Backend saving rate-limiting: only write timestamped file every 3 seconds for same plate
+        should_write_archive = False
+        if plate_text:
+            if plate_text != self.last_saved_plate or (now - self.last_saved_time > 3.0):
+                should_write_archive = True
+                self.last_saved_plate = plate_text
+                self.last_saved_time = now
+
+        try:
+            # 1. Save Zoomed Plate Image
+            cv2.imwrite(os.path.join(self.output_dir, "latest_plate.png"), zoomed_enhanced)
+            zoomed_archive_rel = f"output/plates/zoomed_{ts}_{plate_text or 'scan'}.png"
+            if should_write_archive:
+                cv2.imwrite(os.path.join(self.plates_dir, f"zoomed_{ts}_{plate_text or 'scan'}.png"), zoomed_enhanced)
+
+            # 2. Render Tactical OCR Verification Card
+            card_h = new_h + 84
+            card_w = max(new_w + 30, 440)
+            card = np.zeros((card_h, card_w, 3), dtype=np.uint8)
+            card[:] = (14, 18, 24)
+
+            # Top Tactical Header
+            cv2.rectangle(card, (0, 0), (card_w, 34), (22, 29, 38), -1)
+            cv2.line(card, (0, 34), (card_w, 34), (0, 242, 254), 1)
+            cv2.putText(card, f"TRINETRA-VIG | {source_name} ZOOM OCR", (12, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 242, 254), 1)
+            conf_str = f"CONF: {int(conf*100)}%" if conf > 0 else "SCANNING..."
+            conf_col = (0, 230, 118) if conf >= 0.60 else (0, 215, 255)
+            cv2.putText(card, f"ZOOM: {zoom_scale:.1f}x | {conf_str}", (card_w - 180, 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, conf_col, 1)
+
+            # Draw zoomed plate with bounding highlights on characters if detected
+            display_crop = zoomed_enhanced.copy()
+            if char_boxes and plate_text:
+                scale_x = float(new_w) / max(1, max(int(w_c * (70.0 / float(h_c))), 100))
+                scale_y = float(new_h) / 70.0
+                for cbx, cby, cbw, cbh in char_boxes:
+                    dx1 = max(0, min(new_w, int(cbx * scale_x)))
+                    dy1 = max(0, min(new_h, int(cby * scale_y)))
+                    dx2 = max(0, min(new_w, int((cbx + cbw) * scale_x)))
+                    dy2 = max(0, min(new_h, int((cby + cbh) * scale_y)))
+                    cv2.rectangle(display_crop, (dx1, dy1), (dx2, dy2), (0, 255, 120), 1)
+
+            off_x = (card_w - new_w) // 2
+            off_y = 40
+            card[off_y:off_y+new_h, off_x:off_x+new_w] = display_crop
+            border_col = (0, 242, 254) if plate_text else (0, 160, 240)
+            cv2.rectangle(card, (off_x-1, off_y-1), (off_x+new_w, off_y+new_h), border_col, 2)
+
+            # Bottom HUD Footer
+            footer_y = off_y + new_h + 6
+            cv2.rectangle(card, (0, footer_y), (card_w, card_h), (10, 13, 18), -1)
+            cv2.line(card, (0, footer_y), (card_w, footer_y), (30, 45, 60), 1)
+            bottom_txt = f"PLATE: {plate_text}" if plate_text else "ANALYZING TARGET..."
+            cv2.putText(card, bottom_txt, (12, card_h - 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 242, 254) if plate_text else (180, 200, 220), 2)
+            status_txt = "VERIFIED HSRP" if plate_text else "SEARCHING"
+            status_col = (0, 230, 118) if plate_text else (120, 140, 160)
+            cv2.putText(card, status_txt, (card_w - 120, card_h - 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, status_col, 1)
+
+            cv2.imwrite(os.path.join(self.output_dir, "latest_ocr.png"), card)
+            ocr_archive_rel = f"output/plates/ocr_card_{ts}_{plate_text or 'scan'}.png"
+            if should_write_archive:
+                cv2.imwrite(os.path.join(self.plates_dir, f"ocr_card_{ts}_{plate_text or 'scan'}.png"), card)
+
+            # 3. Write metadata to output/latest_detection.json
+            meta = {
+                "plate_text": plate_text or "SEARCHING",
+                "confidence": conf,
+                "source": source_name,
+                "timestamp": now,
+                "timestamp_str": time_str,
+                "zoomed_image": zoomed_archive_rel if should_write_archive else "output/latest_plate.png",
+                "ocr_card": ocr_archive_rel if should_write_archive else "output/latest_ocr.png",
+                "zoom_scale": round(zoom_scale, 2),
+                "hypotheses": hypotheses,
+                "bbox": bbox or [],
+                "status": "SAVED_TO_BACKEND_OUTPUT" if plate_text else "SCANNING"
+            }
+            with open(self.latest_detection_file, "w") as f:
+                json.dump(meta, f, indent=2)
+
+            # 4. Append to output/history.json
+            if should_write_archive and plate_text:
+                history_entry = {
+                    "plate_text": plate_text,
+                    "confidence": conf,
+                    "timestamp": now,
+                    "timestamp_str": time_str,
+                    "zoomed_image": zoomed_archive_rel,
+                    "ocr_card": ocr_archive_rel
+                }
+                history_list = []
+                if os.path.exists(self.history_file):
+                    try:
+                        with open(self.history_file, "r") as f:
+                            history_list = json.load(f)
+                    except Exception:
+                        history_list = []
+                history_list.insert(0, history_entry)
+                history_list = history_list[:50]
+                with open(self.history_file, "w") as f:
+                    json.dump(history_list, f, indent=2)
+
+        except Exception as e:
+            logger.debug(f"Save zoomed plate error: {e}")
+
+        if plate_text:
+            return {
+                "plate_text": plate_text,
+                "confidence": conf,
+                "hypotheses": hypotheses,
+                "crop": plate_crop,
+                "zoomed_crop": zoomed_enhanced,
+                "bbox": bbox
+            }
+        return None
 
     def find_plate_candidates_in_crop(self, crop: np.ndarray, offset_x: int = 0, offset_y: int = 0) -> List[Dict[str, Any]]:
         """
@@ -564,7 +735,7 @@ class ANPREngine:
         3. Color & luminance masks for White and Yellow license plates.
         4. Central focal search window for handheld / camera-reticle targets.
         5. IoU Non-Maximum Suppression to deduplicate.
-        6. Deep neural OCR verification gate on all candidates.
+        6. Deep neural OCR verification gate on all candidates with zoomed backend persistence.
         """
         if crop is None or crop.shape[0] < 16 or crop.shape[1] < 35:
             return []
@@ -697,15 +868,16 @@ class ANPREngine:
             if plate_crop.size == 0 or np.std(plate_crop) < 16:
                 continue
 
-            ocr_res = self.segment_and_recognize_plate(plate_crop)
-            if ocr_res is not None:
-                plate_text, conf, hypotheses = ocr_res
+            full_bbox = [offset_x + x1, offset_y + y1, offset_x + x2, offset_y + y2]
+            saved_info = self.process_and_save_zoomed_plate(plate_crop, bbox=full_bbox)
+            if saved_info is not None and saved_info.get("plate_text"):
                 plates.append({
-                    "bbox": [offset_x + x1, offset_y + y1, offset_x + x2, offset_y + y2],
+                    "bbox": full_bbox,
                     "crop": plate_crop,
-                    "confidence": conf,
-                    "plate_text": plate_text,
-                    "hypotheses": hypotheses,
+                    "zoomed_crop": saved_info.get("zoomed_crop"),
+                    "confidence": saved_info["confidence"],
+                    "plate_text": saved_info["plate_text"],
+                    "hypotheses": saved_info["hypotheses"],
                     "area": (x2 - x1) * (y2 - y1)
                 })
 
@@ -757,6 +929,7 @@ class ANPREngine:
                                 plate_info = {
                                     "bbox": top_plate["bbox"],
                                     "crop": top_plate["crop"],
+                                    "zoomed_crop": top_plate.get("zoomed_crop"),
                                     "confidence": top_plate["confidence"],
                                     "plate_text": top_plate["plate_text"],
                                     "hypotheses": top_plate["hypotheses"]
@@ -782,6 +955,7 @@ class ANPREngine:
                 detected_plates.append({
                     "bbox": cand["bbox"],
                     "crop": cand["crop"],
+                    "zoomed_crop": cand.get("zoomed_crop"),
                     "confidence": cand["confidence"],
                     "plate_text": cand["plate_text"],
                     "hypotheses": cand["hypotheses"]
@@ -866,13 +1040,13 @@ class ANPREngine:
         p_box_x = v_box_w + 8
         p_box_w = w - 8
         if p_detected:
-            p_title = f"PLATE: DETECTED -> {det_result['primary_plate']}"
+            p_title = f"PLATE: DETECTED -> {det_result['primary_plate']} [SAVED TO /output]"
             p_bg = (10, 80, 70) # Cyan green
             p_border = (0, 242, 254)
             p_text_color = (255, 255, 255)
             p_dot_color = (0, 242, 254)
         else:
-            p_title = "PLATE: NOT DETECTED (SEARCHING...)"
+            p_title = "PLATE: SCANNING FOR HSRP REGISTRATION..."
             p_bg = (20, 35, 50)
             p_border = (0, 160, 240)
             p_text_color = (180, 210, 230)
@@ -950,7 +1124,20 @@ class ANPREngine:
             cv2.rectangle(canvas, (px1, p_badge_y), (px1 + pw + 10, p_badge_y + 16), p_col, 1)
             cv2.putText(canvas, p_txt, (px1 + 5, p_badge_y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 242, 254), 1)
 
-            if p.get("crop") is not None and p["crop"].size > 0:
+            # Tactical corner brackets on plate box
+            pc_len = 10
+            cv2.line(canvas, (px1, py1), (px1 + pc_len, py1), (0, 255, 255), 2)
+            cv2.line(canvas, (px1, py1), (px1, py1 + pc_len), (0, 255, 255), 2)
+            cv2.line(canvas, (px2, py1), (px2 - pc_len, py1), (0, 255, 255), 2)
+            cv2.line(canvas, (px2, py1), (px2, py1 + pc_len), (0, 255, 255), 2)
+            cv2.line(canvas, (px1, py2), (px1 + pc_len, py2), (0, 255, 255), 2)
+            cv2.line(canvas, (px1, py2), (px1, py2 - pc_len), (0, 255, 255), 2)
+            cv2.line(canvas, (px2, py2), (px2 - pc_len, py2), (0, 255, 255), 2)
+            cv2.line(canvas, (px2, py2), (px2, py2 - pc_len), (0, 255, 255), 2)
+
+            if p.get("zoomed_crop") is not None and p["zoomed_crop"].size > 0:
+                plate_crops.append(p["zoomed_crop"])
+            elif p.get("crop") is not None and p["crop"].size > 0:
                 plate_crops.append(p["crop"])
 
         # =========================================================
@@ -973,14 +1160,15 @@ class ANPREngine:
         if plate_crops:
             try:
                 top_crop = plate_crops[0]
-                pip_w, pip_h = 160, 52
+                pip_w, pip_h = 180, 56
                 pip_resized = cv2.resize(top_crop, (pip_w, pip_h))
                 pip_x = w - pip_w - 10
                 pip_y = 82
 
-                cv2.rectangle(canvas, (pip_x - 1, pip_y - 16), (pip_x + pip_w + 1, pip_y + pip_h + 1), (0, 242, 254), 1)
-                cv2.rectangle(canvas, (pip_x, pip_y - 16), (pip_x + pip_w, pip_y), (10, 15, 22), -1)
-                cv2.putText(canvas, f"OCR: {det_result.get('primary_plate')}", (pip_x + 5, pip_y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.33, (0, 242, 254), 1)
+                cv2.rectangle(canvas, (pip_x - 1, pip_y - 18), (pip_x + pip_w + 1, pip_y + pip_h + 1), (0, 242, 254), 1)
+                cv2.rectangle(canvas, (pip_x, pip_y - 18), (pip_x + pip_w, pip_y), (10, 15, 22), -1)
+                pip_label = f"ZOOM OCR: {det_result.get('primary_plate')}"
+                cv2.putText(canvas, pip_label, (pip_x + 5, pip_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 242, 254), 1)
                 canvas[pip_y:pip_y+pip_h, pip_x:pip_x+pip_w] = pip_resized
             except Exception as e:
                 logger.debug(f"PiP draw error: {e}")

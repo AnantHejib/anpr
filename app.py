@@ -1,6 +1,7 @@
 import time
 import os
 import cv2
+import json
 import logging
 from typing import Optional
 from fastapi import FastAPI, Response, Request
@@ -645,6 +646,70 @@ def start_traffic_heartbeat():
     t.start()
 
 start_traffic_heartbeat()
+
+# Serve output assets (zoomed plates and OCR verification cards)
+OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "output"))
+os.makedirs(os.path.join(OUTPUT_DIR, "plates"), exist_ok=True)
+app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
+
+@app.get("/api/output/latest_detection")
+def get_latest_output_detection():
+    """Returns the most recent plate detection, OCR result, and saved image links from /output."""
+    det_file = os.path.join(OUTPUT_DIR, "latest_detection.json")
+    if os.path.exists(det_file):
+        try:
+            with open(det_file, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "plate_text": "SEARCHING",
+        "confidence": 0.0,
+        "source": "CAM_OAKD",
+        "timestamp": time.time(),
+        "timestamp_str": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "zoomed_image": "/output/latest_plate.png",
+        "ocr_card": "/output/latest_ocr.png",
+        "status": "SCANNING_ACTIVE"
+    }
+
+@app.get("/api/output/latest_plate")
+def get_latest_output_plate():
+    """Serves the latest zoomed number plate crop image."""
+    p = os.path.join(OUTPUT_DIR, "latest_plate.png")
+    if os.path.exists(p):
+        return FileResponse(p, media_type="image/png")
+    return JSONResponse(status_code=404, content={"error": "No plate image saved yet."})
+
+@app.get("/api/output/latest_ocr")
+def get_latest_output_ocr():
+    """Serves the latest verified OCR recognition card image."""
+    p = os.path.join(OUTPUT_DIR, "latest_ocr.png")
+    if os.path.exists(p):
+        return FileResponse(p, media_type="image/png")
+    return JSONResponse(status_code=404, content={"error": "No OCR card saved yet."})
+
+@app.get("/api/output/history")
+def get_output_history():
+    """Returns chronological list of all saved plate crops and OCR cards in /output/plates."""
+    h_file = os.path.join(OUTPUT_DIR, "history.json")
+    if os.path.exists(h_file):
+        try:
+            with open(h_file, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    plates_dir = os.path.join(OUTPUT_DIR, "plates")
+    items = []
+    if os.path.exists(plates_dir):
+        files = sorted(os.listdir(plates_dir), reverse=True)[:30]
+        for f in files:
+            if f.endswith(".png"):
+                items.append({
+                    "filename": f,
+                    "url": f"/output/plates/{f}"
+                })
+    return items
 
 # Serve frontend static assets
 os.makedirs("static", exist_ok=True)

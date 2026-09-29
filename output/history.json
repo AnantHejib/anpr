@@ -1,0 +1,18 @@
+[
+  {
+    "plate_text": "MH12OZ1433",
+    "confidence": 0.71,
+    "timestamp": 1790660779.1126516,
+    "timestamp_str": "2026-09-29 11:16:19",
+    "zoomed_image": "output/plates/zoomed_1790660779112_MH12OZ1433.png",
+    "ocr_card": "output/plates/ocr_card_1790660779112_MH12OZ1433.png"
+  },
+  {
+    "plate_text": "MH12DEI4331",
+    "confidence": 0.68,
+    "timestamp": 1790660778.9685571,
+    "timestamp_str": "2026-09-29 11:16:18",
+    "zoomed_image": "output/plates/zoomed_1790660778968_MH12DEI4331.png",
+    "ocr_card": "output/plates/ocr_card_1790660778968_MH12DEI4331.png"
+  }
+]

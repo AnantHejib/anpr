@@ -45,6 +45,11 @@ document.addEventListener("DOMContentLoaded", () => {
     pollLiveDetectionRadar();
     setInterval(pollLiveDetectionRadar, 600);
 
+    // Fast 900ms polling for zoomed plate & backend OCR output (/output)
+    pollOutputInspection();
+    fetchOutputHistory();
+    setInterval(pollOutputInspection, 900);
+
     // Setup Audit Modal Button
     document.getElementById("btn-audit-toggle").addEventListener("click", toggleAuditModal);
 });
@@ -782,10 +787,10 @@ function switchCamera(camId) {
     const badge = document.getElementById("video-cam-badge");
 
     if (camId === "CAM_OAKD") {
-        streamImg.src = "/api/stream/oakd";
-        badge.textContent = "CAM_OAKD · LUXONIS OAK-D PRO";
+        streamImg.src = `/api/stream/oakd?mode=${currentStreamMode || "rgb_hud"}&t=${Date.now()}`;
+        badge.textContent = "CAM_OAKD · LUXONIS OAK-D PRO (RGB + HUD)";
     } else {
-        streamImg.src = `/api/stream/${camId}`;
+        streamImg.src = `/api/stream/${camId}?t=${Date.now()}`;
         const name = cameraMarkers[camId]?.data?.name || camId;
         badge.textContent = `${camId} · ${name.toUpperCase()}`;
     }
@@ -1279,4 +1284,94 @@ function submitPatrolUpload() {
         fetchAnalytics();
     })
     .catch(err => console.error("Patrol upload error:", err));
+}
+
+// =========================================================
+// ZOOMED PLATE & BACKEND OCR INSPECTION (/output)
+// =========================================================
+let lastOutputTs = 0;
+
+function pollOutputInspection() {
+    fetch("/api/output/latest_detection")
+        .then(res => res.json())
+        .then(data => {
+            if (!data) return;
+
+            const isNew = data.timestamp && data.timestamp !== lastOutputTs;
+            if (isNew) {
+                lastOutputTs = data.timestamp;
+            }
+
+            const plateVal = document.getElementById("output-plate-val");
+            const confVal = document.getElementById("output-conf-val");
+            const tsVal = document.getElementById("output-ts-val");
+            const zoomTag = document.getElementById("output-zoom-tag");
+            const pathTag = document.getElementById("output-zoomed-path");
+            const statusPill = document.getElementById("output-status-pill");
+            const zoomedImg = document.getElementById("output-zoomed-plate-img");
+            const ocrImg = document.getElementById("output-ocr-card-img");
+
+            if (plateVal) plateVal.textContent = data.plate_text || "--";
+            if (confVal) confVal.textContent = (data.confidence && data.confidence > 0) ? Math.round(data.confidence * 100) + "%" : "--";
+            if (tsVal) tsVal.textContent = data.timestamp_str || "LIVE";
+            if (zoomTag) zoomTag.textContent = (data.zoom_scale || 3.5) + "x OPTICAL ZOOM";
+            if (pathTag) pathTag.textContent = data.zoomed_image || "output/latest_plate.png";
+
+            if (statusPill) {
+                if (data.status === "SAVED_TO_BACKEND_OUTPUT" || (data.plate_text && data.plate_text !== "SEARCHING")) {
+                    statusPill.className = "proximity-pill nominal";
+                    statusPill.textContent = "● SAVED TO /output";
+                } else {
+                    statusPill.className = "proximity-pill caution";
+                    statusPill.textContent = "● SCANNING ACTIVE";
+                }
+            }
+
+            // Only refresh image src when timestamp changes to avoid flicker
+            if (isNew && zoomedImg && ocrImg) {
+                zoomedImg.src = `/output/latest_plate.png?t=${data.timestamp}`;
+                ocrImg.src = `/output/latest_ocr.png?t=${data.timestamp}`;
+                fetchOutputHistory();
+            }
+        })
+        .catch(err => console.debug("Output polling error:", err));
+}
+
+function refreshOutputInspection() {
+    const zoomedImg = document.getElementById("output-zoomed-plate-img");
+    const ocrImg = document.getElementById("output-ocr-card-img");
+    const now = Date.now();
+    if (zoomedImg) zoomedImg.src = `/output/latest_plate.png?t=${now}`;
+    if (ocrImg) ocrImg.src = `/output/latest_ocr.png?t=${now}`;
+    fetchOutputHistory();
+    pollOutputInspection();
+}
+
+function fetchOutputHistory() {
+    fetch("/api/output/history")
+        .then(res => res.json())
+        .then(history => {
+            const gallery = document.getElementById("saved-plates-gallery");
+            if (!gallery || !Array.isArray(history)) return;
+
+            gallery.innerHTML = "";
+            if (history.length === 0) {
+                gallery.innerHTML = `<span style="font-size:0.7rem; color:var(--text-muted); padding:6px;">No archived plate images yet.</span>`;
+                return;
+            }
+
+            history.slice(0, 12).forEach(item => {
+                const thumb = document.createElement("div");
+                thumb.className = "saved-plate-thumb";
+                const imgUrl = item.zoomed_image || item.url || `/output/plates/${item.filename}`;
+                thumb.title = `${item.plate_text || item.filename || "Plate"} (${item.timestamp_str || ""})`;
+                thumb.innerHTML = `<img src="/${imgUrl.replace(/^\/+/, '')}" alt="Saved Plate" onerror="this.style.display='none'" />`;
+                thumb.onclick = () => {
+                    const zoomedImg = document.getElementById("output-zoomed-plate-img");
+                    if (zoomedImg) zoomedImg.src = `/${imgUrl.replace(/^\/+/, '')}`;
+                };
+                gallery.appendChild(thumb);
+            });
+        })
+        .catch(err => console.debug("Output history fetch error:", err));
 }

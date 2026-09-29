@@ -231,6 +231,72 @@
                     </div>
                 </div>
 
+                <!-- Zoomed Plate & Backend OCR Output Deck (/output) -->
+                <div class="output-inspection-deck" id="output-inspection-deck">
+                    <div class="deck-title">
+                        <div class="title-left">
+                            <span class="icon">🔍</span>
+                            <strong>ZOOMED PLATE & BACKEND OCR RECOGNITION (/output)</strong>
+                        </div>
+                        <div class="proximity-badge-wrap">
+                            <span class="proximity-pill nominal" id="output-status-pill">● BACKEND PERSISTED</span>
+                        </div>
+                    </div>
+
+                    <div class="output-main-grid">
+                        <!-- Left: Zoomed Plate Image -->
+                        <div class="output-card zoom-card">
+                            <div class="output-card-header">
+                                <span class="tag">ZOOMED PLATE REGION</span>
+                                <span class="zoom-multiplier" id="output-zoom-tag">3.5x OPTICAL ZOOM</span>
+                            </div>
+                            <div class="output-img-wrap">
+                                <img id="output-zoomed-plate-img" src="/output/latest_plate.png" alt="Zoomed Number Plate" onerror="this.src='/static/placeholder_plate.png'" />
+                            </div>
+                            <div class="output-meta-strip">
+                                <span class="meta-label">BACKEND TARGET:</span>
+                                <code id="output-zoomed-path">output/latest_plate.png</code>
+                            </div>
+                        </div>
+
+                        <!-- Right: Verified OCR Recognition Card -->
+                        <div class="output-card ocr-card">
+                            <div class="output-card-header">
+                                <span class="tag">VERIFIED OCR RECOGNITION CARD</span>
+                                <span class="status-badge" id="output-ocr-badge">FastCharCNN · 99.9%</span>
+                            </div>
+                            <div class="output-img-wrap">
+                                <img id="output-ocr-card-img" src="/output/latest_ocr.png" alt="OCR Recognition Card" onerror="this.src='/static/placeholder_card.png'" />
+                            </div>
+                            <div class="output-detail-strip">
+                                <div class="detail-item">
+                                    <span class="label">RECOGNIZED:</span>
+                                    <strong class="val-plate" id="output-plate-val">MH12DE1433</strong>
+                                </div>
+                                <div class="detail-item">
+                                    <span class="label">CONFIDENCE:</span>
+                                    <span class="val-conf" id="output-conf-val">98%</span>
+                                </div>
+                                <div class="detail-item">
+                                    <span class="label">TIMESTAMP:</span>
+                                    <span class="val-ts" id="output-ts-val">LIVE</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Recent Saved Plates Gallery Strip -->
+                    <div class="saved-plates-strip">
+                        <div class="strip-header">
+                            <span>RECENT SAVED PLATES IN BACKEND (/output/plates/)</span>
+                            <button class="btn-refresh-output" onclick="refreshOutputInspection()" title="Reload from /output">⟳ REFRESH</button>
+                        </div>
+                        <div class="saved-plates-gallery" id="saved-plates-gallery">
+                            <!-- Populated dynamically by JS -->
+                        </div>
+                    </div>
+                </div>
+
                 <!-- OAK-D Pro 3-Camera Sensor Matrix -->
                 <div class="sensor-matrix-deck">
                     <div class="matrix-title">
